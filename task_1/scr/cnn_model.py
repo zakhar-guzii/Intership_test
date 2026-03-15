@@ -61,7 +61,6 @@ class ConvolutionNN(MnistClassifierInterface):
 
     def predict(self, X_test):
         self._model.eval()
-        
         tensor_X = torch.Tensor(X_test / 255.0).view(-1, 1, 28, 28)
         
         with torch.no_grad():
