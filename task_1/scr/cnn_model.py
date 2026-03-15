@@ -3,10 +3,8 @@ import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 import logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+from task_1.scr.interface import MnistClassifierInterface
+
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +20,7 @@ class ConvolutionNN(MnistClassifierInterface):
             nn.Flatten(),
             nn.Linear(32 * 7 * 7, 128),
             nn.ReLU(),
-            nn.Linear(128, 10),
-            nn.LogSoftmax(dim=1)
+            nn.Linear(128, 10)
         )
         
         self.epochs = 5
@@ -31,7 +28,7 @@ class ConvolutionNN(MnistClassifierInterface):
         self.learning_rate = 0.001
 
     def train(self, X_train, y_train):
-        tensor_X = torch.Tensor(X_train).view(-1, 1, 28, 28) 
+        tensor_X = torch.Tensor(X_train / 255.0).view(-1, 1, 28, 28)
         tensor_y = torch.LongTensor(y_train)
         
         dataset = TensorDataset(tensor_X, tensor_y)
@@ -65,7 +62,7 @@ class ConvolutionNN(MnistClassifierInterface):
     def predict(self, X_test):
         self._model.eval()
         
-        tensor_X = torch.Tensor(X_test).view(-1, 1, 28, 28)
+        tensor_X = torch.Tensor(X_test / 255.0).view(-1, 1, 28, 28)
         
         with torch.no_grad():
             output = self._model(tensor_X)
