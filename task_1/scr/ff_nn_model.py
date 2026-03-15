@@ -4,14 +4,6 @@ from torch.utils.data import TensorDataset, DataLoader
 from task_1.scr.interface import MnistClassifierInterface
 import logging
 
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-
-logger = logging.getLogger(__name__)
-
 class FeedForwardNN(MnistClassifierInterface):
     def __init__(self):
         self._model = nn.Sequential(
@@ -27,7 +19,6 @@ class FeedForwardNN(MnistClassifierInterface):
         self.learning_rate = 0.001
 
     def train(self, X_train, y_train):
-        #Data preporation, X_train has shape (N, 28, 28), we convert everything in (N, 784)
         tensor_X = torch.Tensor(X_train).view(-1, 784)
         tensor_y = torch.LongTendor(y_train)
 

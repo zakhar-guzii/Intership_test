@@ -1,10 +1,10 @@
 from abc import ABC, abstractmethod 
 
 class MnistClassifierInterface(ABC):
-    @abstructmethod
+    @abstractmethod
     def train(self, X_train, y_train):
         pass
 
-    @abstructmethod
+    @abstractmethod
     def predict(self, X_test):
         pass
