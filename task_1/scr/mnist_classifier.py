@@ -1,3 +1,7 @@
+from task_1.scr.cnn_model import ConvolutionNN
+from task_1.scr.ff_nn_model import FeedForwardNN
+from task_1.scr.random_forest_model import RandomForestModel
+
 class MnistClassifier:
     def __init__(self, algorithm: str):
         self.algorihm = algorithm
@@ -9,7 +13,7 @@ class MnistClassifier:
         elif self.algorihm == 'cnn':
             self._model = ConvolutionNN()
         else: 
-            raise ValueError(f"Unknown algorithm: {self.algoritm}")
+            raise ValueError(f"Unknown algorithm: {self.algorihm}")
 
     
     def train(self, X_train, y_train):
