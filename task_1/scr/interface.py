@@ -1,4 +1,4 @@
-from abs import ABC, abstructmethod
+from abc import ABC, abstractmethod 
 
 class MnistClassifierInterface(ABC):
     @abstructmethod
