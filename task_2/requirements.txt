@@ -9,3 +9,7 @@ torchvision
 scikit-learn
 transformers
 datasets
+evaluate
+seqeval
+faker
+'accelerate>=1.1.0'
