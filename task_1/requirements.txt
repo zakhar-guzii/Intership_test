@@ -1,5 +1,5 @@
-abc
-sklearn
-numpy
+scikit-learn
 torch
-pandas
+numpy
+matplotlib
+jupyter

@@ -4,6 +4,9 @@ from src.interface import MnistClassifierInterface
 
 
 class RandomForestModel(MnistClassifierInterface):
+    """
+        Initializes the Random Forest model for MNIST classification.
+    """
     def __init__(self):
         self._model = RandomForestClassifier(n_estimators=100)
 
