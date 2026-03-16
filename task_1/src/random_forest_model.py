@@ -1,6 +1,6 @@
 from sklearn.ensemble import RandomForestClassifier
 
-from task_1.scr.interface import MnistClassifierInterface
+from src.interface import MnistClassifierInterface
 
 
 class RandomForestModel(MnistClassifierInterface):

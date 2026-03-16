@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 import logging
 
-from task_1.scr.interface import MnistClassifierInterface
+from src.interface import MnistClassifierInterface
 
 
 logger = logging.getLogger(__name__)
