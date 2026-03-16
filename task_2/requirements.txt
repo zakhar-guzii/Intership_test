@@ -1,1 +1,6 @@
 kagglehub
+seaborn
+numpy
+pandas
+matplotlib
+Pillow
