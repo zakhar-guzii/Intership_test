@@ -1,188 +1,285 @@
 import argparse
-import os
 import logging
+import os
+import random
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Subset
-import torchvision.models as models
-from torchvision import datasets, transforms
+from torchvision import datasets, models, transforms
 
 
-def prepare_data(data_dir, batch_size):
+# ---------------------------------------------------------------------------
+# Reproducibility
+# ---------------------------------------------------------------------------
+
+def set_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+# ---------------------------------------------------------------------------
+# Data
+# ---------------------------------------------------------------------------
+
+def prepare_data(
+    data_dir: str,
+    batch_size: int,
+    val_split: float,
+    num_workers: int,
+    seed: int,
+) -> tuple[DataLoader, DataLoader, torch.Tensor, list[str]]:
+    """
+    Load dataset from `data_dir`, apply augmentations on the train split,
+    compute class weights to address imbalance, and return data loaders.
+
+    Class weight formula: W_c = N_train / (C * N_c)
+    where N_train = train subset size, C = number of classes, N_c = samples in class c.
+    """
     train_transforms = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.RandomHorizontalFlip(),
         transforms.RandomRotation(15),
-        transforms.ColorJitter(brightness=0.2),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225])
+                             std=[0.229, 0.224, 0.225]),
     ])
 
     val_transforms = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225])
+                             std=[0.229, 0.224, 0.225]),
     ])
 
+    # Load twice — same indices, different transforms
     train_full = datasets.ImageFolder(root=data_dir, transform=train_transforms)
     val_full   = datasets.ImageFolder(root=data_dir, transform=val_transforms)
 
     num_classes = len(train_full.classes)
-    total = len(train_full)
-    logging.info(f"There are {total} images and {num_classes} classes.")
+    total       = len(train_full)
+    logging.info(f"Dataset: {total} images across {num_classes} classes.")
 
-    # Split indices — same split for both, but different transforms applied
+    # Shuffle indices with fixed seed for reproducibility
     indices = list(range(total))
-    split = int(0.8 * total)
+    rng = random.Random(seed)
+    rng.shuffle(indices)
 
-    train_dataset = Subset(train_full, indices[:split])
-    val_dataset   = Subset(val_full,   indices[split:])
+    split = int((1.0 - val_split) * total)
+    train_indices = indices[:split]
+    val_indices   = indices[split:]
 
-    # Calculate class weights to handle dataset imbalance.
-    # We compute this strictly on the training subset to prevent data leakage.
-    # Formula used: W = N_total / (N_classes * N_class)
-    train_targets = [train_full.targets[i] for i in indices[:split]]
-    class_counts = np.bincount(train_targets)
-    class_weights = total * 0.8 / (num_classes * np.where(class_counts == 0, 1, class_counts))
+    train_dataset = Subset(train_full, train_indices)
+    val_dataset   = Subset(val_full,   val_indices)
+
+    logging.info(f"Split: {len(train_indices)} train / {len(val_indices)} val")
+
+    # Class weights computed only on the train subset (no data leakage)
+    train_targets  = [train_full.targets[i] for i in train_indices]
+    class_counts   = np.bincount(train_targets, minlength=num_classes)
+    class_weights  = len(train_indices) / (
+        num_classes * np.where(class_counts == 0, 1, class_counts)
+    )
     class_weights_tensor = torch.FloatTensor(class_weights)
-
-    logging.info(f"Calculated Class Weights: {class_weights_tensor}")
+    logging.info(f"Class weights: {class_weights_tensor.tolist()}")
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=2
+        num_workers=num_workers,
+        pin_memory=True,
     )
-
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=2
+        num_workers=num_workers,
+        pin_memory=True,
     )
 
     return train_loader, val_loader, class_weights_tensor, train_full.classes
 
 
-def build_model(num_classes=10, freeze_features=True):
+# ---------------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------------
+
+def build_model(num_classes: int, freeze_backbone: bool) -> nn.Module:
+    """
+    Load pretrained ResNet-18 and replace the classification head.
+
+    If `freeze_backbone` is True, only the final FC layer is trained (fast
+    feature extraction). Set to False to fine-tune the entire network.
+    """
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
 
-    if freeze_features:
+    if freeze_backbone:
         for param in model.parameters():
-            param.requires_grad = False  # freeze backbone
+            param.requires_grad = False
+        logging.info("Backbone frozen — training classification head only.")
+    else:
+        logging.info("Full fine-tuning — all layers trainable.")
 
     num_ftrs = model.fc.in_features
-    model.fc = nn.Linear(num_ftrs, num_classes)
+    model.fc = nn.Sequential(
+        nn.Dropout(p=0.3),
+        nn.Linear(num_ftrs, num_classes),
+    )
 
     return model
 
 
-def train(model, dataloader, criterion, optimizer, device):
-    model.train()
+# ---------------------------------------------------------------------------
+# Train / evaluate
+# ---------------------------------------------------------------------------
+
+def run_epoch(
+    model: nn.Module,
+    dataloader: DataLoader,
+    criterion: nn.Module,
+    optimizer: optim.Optimizer | None,
+    device: torch.device,
+) -> tuple[float, float]:
+    """Single training or evaluation pass."""
+    training = optimizer is not None
+    model.train() if training else model.eval()
+
     running_loss = 0.0
-    correct_predictions = 0
-    total_samples = 0
+    correct      = 0
+    total        = 0
 
-    for images, labels in dataloader:
-        images = images.to(device)
-        labels = labels.to(device)
-
-        optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-
-        running_loss += loss.item() * images.size(0)
-        _, preds = torch.max(outputs, dim=1)
-        correct_predictions += torch.sum(preds == labels.data)
-        total_samples += labels.size(0)
-
-    epoch_loss = running_loss / total_samples
-    epoch_acc = correct_predictions.double() / total_samples
-
-    return epoch_loss, epoch_acc.item()
-
-
-def evaluate(model, dataloader, criterion, device):
-    model.eval()
-    running_loss = 0.0
-    correct_predictions = 0
-    total_samples = 0
-
-    with torch.no_grad():
+    ctx = torch.enable_grad() if training else torch.no_grad()
+    with ctx:
         for images, labels in dataloader:
-            images = images.to(device)
-            labels = labels.to(device)
+            images, labels = images.to(device), labels.to(device)
+
+            if training:
+                optimizer.zero_grad()
 
             outputs = model(images)
-            loss = criterion(outputs, labels)
+            loss    = criterion(outputs, labels)
+
+            if training:
+                loss.backward()
+                optimizer.step()
 
             running_loss += loss.item() * images.size(0)
             _, preds = torch.max(outputs, dim=1)
-            correct_predictions += torch.sum(preds == labels.data)
-            total_samples += labels.size(0)
+            correct  += (preds == labels).sum().item()
+            total    += labels.size(0)
 
-    epoch_loss = running_loss / total_samples
-    epoch_acc = correct_predictions.double() / total_samples
-
-    return epoch_loss, epoch_acc.item()
+    return running_loss / total, correct / total
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Train a classifier on the Animals-10 dataset")
-    parser.add_argument('--data_dir', type=str, default='data/Animals-10', help='Path to the dataset directory')
-    parser.add_argument('--model_dir', type=str, default='models/', help='Directory to save trained models')
-    parser.add_argument('--epochs', type=int, default=20, help='Number of training epochs')
-    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training')
-    parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate for optimizer')
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Train a ResNet-18 classifier on the Animals-10 dataset."
+    )
+    parser.add_argument("--data_dir",       type=str,   default="data/Animals-10",
+                        help="Path to dataset root directory.")
+    parser.add_argument("--model_dir",      type=str,   default="models/",
+                        help="Directory to save model checkpoints.")
+    parser.add_argument("--epochs",         type=int,   default=20,
+                        help="Maximum number of training epochs.")
+    parser.add_argument("--batch_size",     type=int,   default=32,
+                        help="Batch size for training and validation.")
+    parser.add_argument("--learning_rate",  type=float, default=1e-3,
+                        help="Initial learning rate for the optimizer.")
+    parser.add_argument("--val_split",      type=float, default=0.2,
+                        help="Fraction of data to use for validation (default: 0.2).")
+    parser.add_argument("--num_workers",    type=int,   default=2,
+                        help="Number of DataLoader worker processes.")
+    parser.add_argument("--seed",           type=int,   default=42,
+                        help="Random seed for reproducibility.")
+    parser.add_argument("--patience",       type=int,   default=5,
+                        help="Early-stopping patience (epochs without improvement).")
+    parser.add_argument("--freeze_backbone", action="store_true",
+                        help="Freeze ResNet backbone; train only the classification head.")
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    set_seed(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logging.info(f"Using device: {device}")
+    logging.info(f"Device: {device}")
 
-    train_loader, val_loader, class_weights, class_names = prepare_data(args.data_dir, args.batch_size)
+    # Data
+    train_loader, val_loader, class_weights, class_names = prepare_data(
+        data_dir    = args.data_dir,
+        batch_size  = args.batch_size,
+        val_split   = args.val_split,
+        num_workers = args.num_workers,
+        seed        = args.seed,
+    )
 
-    class_weights = class_weights.to(device)
+    # Model
+    model = build_model(
+        num_classes     = len(class_names),
+        freeze_backbone = args.freeze_backbone,
+    ).to(device)
 
-    model = build_model(num_classes=len(class_names))
-    model = model.to(device)
+    # Loss, optimiser, scheduler
+    criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
+    optimizer = optim.Adam(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=args.learning_rate,
+    )
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.epochs, eta_min=1e-6
+    )
 
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
-    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate)
+    # Training loop with early stopping
+    best_val_acc    = 0.0
+    epochs_no_improve = 0
+    os.makedirs(args.model_dir, exist_ok=True)
+    save_path = os.path.join(args.model_dir, "best_animal_classifier.pth")
 
-    best_val_acc = 0.0
+    for epoch in range(1, args.epochs + 1):
+        logging.info(f"\nEpoch {epoch}/{args.epochs}  (lr={scheduler.get_last_lr()[0]:.2e})")
+        logging.info("-" * 40)
 
-    for epoch in range(args.epochs):
-        logging.info(f"\nEpoch {epoch+1}/{args.epochs}")
-        logging.info("-" * 15)
+        train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer, device)
+        val_loss,   val_acc   = run_epoch(model, val_loader,   criterion, None,      device)
+        scheduler.step()
 
-        train_loss, train_acc = train(model, train_loader, criterion, optimizer, device)
-        val_loss, val_acc = evaluate(model, val_loader, criterion, device)
-
-        logging.info(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
-        logging.info(f"Val Loss:   {val_loss:.4f} | Val Acc:   {val_acc:.4f}")
+        logging.info(f"Train — loss: {train_loss:.4f}  acc: {train_acc:.4f}")
+        logging.info(f"Val   — loss: {val_loss:.4f}  acc: {val_acc:.4f}")
 
         if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            os.makedirs(args.model_dir, exist_ok=True)
-            save_path = os.path.join(args.model_dir, "best_animal_classifier.pth")
-            torch.save({
-                'model_state_dict': model.state_dict(),
-                'class_names': class_names    
-            }, save_path)
-            logging.info(f"Model saved to {save_path}")
+            best_val_acc      = val_acc
+            epochs_no_improve = 0
+            torch.save(
+                {
+                    "epoch":            epoch,
+                    "model_state_dict": model.state_dict(),
+                    "val_acc":          best_val_acc,
+                    "class_names":      class_names,
+                    "args":             vars(args),
+                },
+                save_path,
+            )
+            logging.info(f"Checkpoint saved → {save_path}  (val_acc={best_val_acc:.4f})")
+        else:
+            epochs_no_improve += 1
+            logging.info(
+                f"No improvement for {epochs_no_improve}/{args.patience} epochs."
+            )
+            if epochs_no_improve >= args.patience:
+                logging.info("Early stopping triggered.")
+                break
 
-    logging.info(f"\nBest Val Acc: {best_val_acc:.4f}")
+    logging.info(f"\nTraining complete. Best val acc: {best_val_acc:.4f}")
 
 
 if __name__ == "__main__":
