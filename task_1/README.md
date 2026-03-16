@@ -4,13 +4,15 @@ Three classification models for handwritten digit recognition using the MNIST da
 
 ## Models
 
-| Key | Class | Algorithm ||-----|-------|-----------|
+| Key | Class | Algorithm |
+|-----|-------|-----------|
 | `rf` | `RandomForestModel` | Random Forest (scikit-learn) |
 | `nn` | `FeedForwardNN` | Feed-Forward Neural Network (PyTorch) |
 | `cnn` | `ConvolutionNN` | Convolutional Neural Network (PyTorch) |
 
 ## Project Structure
 
+```
 task1/
 ├── src/
 │   ├── interface.py            # MnistClassifierInterface (ABC)
@@ -22,6 +24,7 @@ task1/
 │   └── demo.ipynb
 ├── requirements.txt
 └── README.md
+```
 
 ## Setup
 
@@ -62,7 +65,8 @@ jupyter notebook demo.ipynb
 
 Evaluated on 14,000 test samples (80/20 split, `random_state=42`):
 
-| Model | Test Accuracy ||-------|--------------|
+| Model | Test Accuracy |
+|-------|--------------|
 | Random Forest | 96.71% |
 | Feed-Forward NN | 97.80% |
 | CNN | 99.17% |
