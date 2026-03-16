@@ -7,3 +7,5 @@ Pillow
 torch
 torchvision
 scikit-learn
+transformers
+datasets
