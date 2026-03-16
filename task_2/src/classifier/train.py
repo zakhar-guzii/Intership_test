@@ -11,9 +11,6 @@ from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, models, transforms
 
 
-# ---------------------------------------------------------------------------
-# Reproducibility
-# ---------------------------------------------------------------------------
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -23,9 +20,6 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-# ---------------------------------------------------------------------------
-# Data
-# ---------------------------------------------------------------------------
 
 def prepare_data(
     data_dir: str,
@@ -107,9 +101,6 @@ def prepare_data(
     return train_loader, val_loader, class_weights_tensor, train_full.classes
 
 
-# ---------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------
 
 def build_model(num_classes: int, freeze_backbone: bool) -> nn.Module:
     """
@@ -136,9 +127,6 @@ def build_model(num_classes: int, freeze_backbone: bool) -> nn.Module:
     return model
 
 
-# ---------------------------------------------------------------------------
-# Train / evaluate
-# ---------------------------------------------------------------------------
 
 def run_epoch(
     model: nn.Module,
@@ -178,10 +166,6 @@ def run_epoch(
     return running_loss / total, correct / total
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Train a ResNet-18 classifier on the Animals-10 dataset."
@@ -211,7 +195,12 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     set_seed(args.seed)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")  # Використання GPU Apple Silicon
+    else:
+        device = torch.device("cpu")    
     logging.info(f"Device: {device}")
 
     # Data
@@ -239,7 +228,6 @@ def main() -> None:
         optimizer, T_max=args.epochs, eta_min=1e-6
     )
 
-    # Training loop with early stopping
     best_val_acc    = 0.0
     epochs_no_improve = 0
     os.makedirs(args.model_dir, exist_ok=True)
