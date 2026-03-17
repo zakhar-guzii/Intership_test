@@ -40,13 +40,14 @@ Python **3.10+** is required.
 
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate      # macOS / Linux
-# .venv\Scripts\activate       # Windows
+source .venv/bin/activate      
+
 ```
 
 **2. Install all dependencies:**
 
 ```bash
+cd task_1
 pip install -r requirements.txt
 ```
 
