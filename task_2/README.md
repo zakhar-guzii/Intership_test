@@ -152,7 +152,7 @@ All inference commands should be run from the `task_2/` root.
 python src/classifier/train.py \
     --data_dir data/raw-img \
     --model_dir models/ \
-    --epochs 20 \
+    --epochs 5 \
     --batch_size 32 \
     --learning_rate 1e-3 \
     --patience 5
