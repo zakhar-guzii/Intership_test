@@ -39,19 +39,33 @@ task_2/
 │   ├── generate_data.py        # Synthetic NER dataset generator
 │   └── pipeline.py             # Unified multimodal execution script
 ├── requirements.txt
+├── .gitignore
 └── README.md
-└── .gitignore
 ```
 
 ---
 
 ## Setup
 
-Python **3.10+** is required. Install all dependencies:
+Python **3.10+** is required.
+
+**1. Create and activate a virtual environment:**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate      # macOS / Linux
+# .venv\Scripts\activate       # Windows
+```
+
+**2. Install all dependencies:**
 
 ```bash
 pip install -r requirements.txt
 ```
+
+> For optimal training performance, install the PyTorch build that matches your CUDA/GPU environment from [pytorch.org](https://pytorch.org).
+
+> **VSCode users:** after activating the venv, select it as the Python interpreter via `Cmd+Shift+P` → `Python: Select Interpreter` → choose `.venv`. For Jupyter notebooks, select the `.venv` kernel in the top-right kernel picker.
 
 ---
 
@@ -59,7 +73,7 @@ pip install -r requirements.txt
 
 ### Image Dataset
 
-Download the Animals-10 dataset from [Kaggle](https://www.kaggle.com/datasets/alessiocorrado99/animals10). 
+Download the Animals-10 dataset from [Kaggle](https://www.kaggle.com/datasets/alessiocorrado99/animals10). The easiest way is via `notebooks/data_loading.ipynb` which handles download, extraction, and folder renaming automatically.
 
 Alternatively, via CLI from the `task_2/` root:
 
@@ -93,7 +107,9 @@ Generate the synthetic NER training dataset from the `task_2/` root:
 python src/generate_data.py
 ```
 
-This produces `data/ner_dataset.json` with 1600 sentences (1200 positive / 400 negative), balanced across all 10 animal classes across 8 sentence styles. But we have overfit anyway.
+This produces `data/ner_dataset.json` with 1600 sentences (1200 positive / 400 negative), balanced across all 10 animal classes across 8 sentence styles.
+
+> **Note:** The NER model achieves F1 = 1.0 on the validation set due to the synthetic and templated nature of the training data. Real-world performance on more varied text may differ.
 
 ---
 
@@ -238,10 +254,4 @@ Handles the full dataset setup: Kaggle download, extraction to `task_2/data/`, a
 Covers dataset exploration: class distribution analysis, resolution of the 3.4× class imbalance through weighted loss calculation, and visualization of per-channel normalization statistics.
 
 ### `demo.ipynb`
-Demonstrates the full pipeline across standard and edge cases. 
-To run the demo notebook:
-
-```bash
-cd task_2/notebooks
-PYTHONPATH=.. jupyter notebook demo.ipynb
-```
+Demonstrates the full pipeline across standard and edge cases.
