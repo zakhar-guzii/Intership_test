@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 
 def validate_paths(image_path: str, ner_model_path: str, cv_model_path: str) -> None:
-    """Fail fast with a clear message if any required path is missing."""
     checks = {
         "image_path":     Path(image_path),
         "ner_model_path": Path(ner_model_path),

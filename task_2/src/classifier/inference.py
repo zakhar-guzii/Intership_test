@@ -29,7 +29,6 @@ def load_model(
     """
     checkpoint = torch.load(model_path, map_location=device)
 
-    # Support both checkpoint dict and raw state_dict (legacy)
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
         state_dict  = checkpoint["model_state_dict"]
         class_names = checkpoint.get("class_names", None)
@@ -88,11 +87,11 @@ def predict(
         logging.error(f"Cannot open image '{image_path}': {exc}")
         sys.exit(1)
 
-    tensor = VAL_TRANSFORMS(image).unsqueeze(0).to(device)   # (1, C, H, W)
+    tensor = VAL_TRANSFORMS(image).unsqueeze(0).to(device) 
 
     with torch.no_grad():
         logits = model(tensor)
-        probs  = F.softmax(logits, dim=1).squeeze(0)          # (num_classes,)
+        probs  = F.softmax(logits, dim=1).squeeze(0)
 
     top_k  = min(top_k, len(class_names))
     values, indices = torch.topk(probs, top_k)

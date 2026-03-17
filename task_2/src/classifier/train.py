@@ -18,18 +18,11 @@ from transformers import (
 import evaluate
 
 
-# ---------------------------------------------------------------------------
-# Label schema
-# ---------------------------------------------------------------------------
-
 LABEL_LIST = ["O", "B-ANIMAL", "I-ANIMAL"]
 ID2LABEL   = {i: label for i, label in enumerate(LABEL_LIST)}
 LABEL2ID   = {label: i for i, label in enumerate(LABEL_LIST)}
 
 
-# ---------------------------------------------------------------------------
-# Tokenisation & label alignment
-# ---------------------------------------------------------------------------
 
 def tokenize_and_align_labels(
     examples: dict,
@@ -77,10 +70,6 @@ def tokenize_and_align_labels(
     return tokenized_inputs
 
 
-# ---------------------------------------------------------------------------
-# Metrics
-# ---------------------------------------------------------------------------
-
 def build_compute_metrics(label_list: list[str]):
     """
     Returns a compute_metrics function for seqeval token-level NER evaluation.
@@ -112,9 +101,6 @@ def build_compute_metrics(label_list: list[str]):
     return compute_metrics
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -157,7 +143,6 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     set_seed(args.seed)
 
-    # ── Device ───────────────────────────────────────────────────────────────
     if torch.cuda.is_available():
         device_str = "cuda"
     elif torch.backends.mps.is_available():
@@ -166,12 +151,10 @@ def main() -> None:
         device_str = "cpu"
     logging.info(f"Device: {device_str}")
 
-    # fp16 is only safe on CUDA
     use_fp16 = args.fp16 and device_str == "cuda"
     if args.fp16 and device_str != "cuda":
         logging.warning("--fp16 is only supported on CUDA. Ignoring for current device.")
 
-    # ── Dataset ──────────────────────────────────────────────────────────────
     if args.val_path:
         raw_dataset: DatasetDict = load_dataset(
             "json",
@@ -187,7 +170,6 @@ def main() -> None:
         f"{len(raw_dataset['validation'])} val examples."
     )
 
-    # ── Tokeniser & model ────────────────────────────────────────────────────
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, add_prefix_space=True)
 
     model = AutoModelForTokenClassification.from_pretrained(
@@ -198,8 +180,6 @@ def main() -> None:
         ignore_mismatched_sizes=True,
     )
 
-    # ── Tokenise dataset ─────────────────────────────────────────────────────
-    # Limit num_proc to avoid fork-related issues on macOS
     cpu_count = multiprocessing.cpu_count()
     num_proc  = min(4, cpu_count) if device_str != "mps" else 1
     logging.info(f"Tokenizing dataset using {num_proc} CPU core(s)...")
@@ -211,7 +191,6 @@ def main() -> None:
         remove_columns=raw_dataset["train"].column_names,
     )
 
-    # ── Training arguments ───────────────────────────────────────────────────
     num_workers = args.num_workers if args.num_workers is not None else min(4, cpu_count)
 
     training_args = TrainingArguments(
@@ -234,7 +213,6 @@ def main() -> None:
         fp16                        = use_fp16,
     )
 
-    # ── Trainer ──────────────────────────────────────────────────────────────
     trainer = Trainer(
         model           = model,
         args            = training_args,
@@ -246,7 +224,6 @@ def main() -> None:
         callbacks       = [EarlyStoppingCallback(early_stopping_patience=args.patience)],
     )
 
-    # ── Train & save ─────────────────────────────────────────────────────────
     logging.info("\nStarting training...")
     trainer.train()
 

@@ -1,5 +1,6 @@
 kagglehub
 seaborn
+kaggle
 numpy
 pandas
 matplotlib
