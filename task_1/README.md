@@ -51,8 +51,6 @@ cd task_1
 pip install -r requirements.txt
 ```
 
-> **VSCode users:** after activating the venv, select it as the Python interpreter via `Cmd+Shift+P` → `Python: Select Interpreter` → choose `.venv`. For Jupyter notebooks, select the `.venv` kernel in the top-right kernel picker.
-
 ---
 
 ## Usage
