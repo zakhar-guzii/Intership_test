@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pth
+task_2/data/
+task_2/models/
+.DS_Store
+data/

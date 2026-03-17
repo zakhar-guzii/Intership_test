@@ -22,7 +22,7 @@ A multimodal machine learning pipeline that combines **Natural Language Processi
 ```
 task_2/
 ├── data/
-│   └── Animals-10/             # Dataset directory (not included in repo)
+│   └── raw-img/                # Dataset directory (not included in repo)
 ├── models/                     # Saved model weights (.pth and HF format)
 ├── notebooks/
 │   ├── demo.ipynb              # Pipeline visualization and edge cases
@@ -34,6 +34,7 @@ task_2/
 │   ├── ner/
 │   │   ├── inference.py        # NER entity extraction script
 │   │   └── train.py            # Transformer fine-tuning script
+│   ├── generate_data.py        # Synthetic NER dataset generator
 │   └── pipeline.py             # Unified multimodal execution script
 ├── requirements.txt
 └── README.md
@@ -53,21 +54,59 @@ pip install -r requirements.txt
 
 ---
 
+## Data Preparation
+
+### Image Dataset
+
+Download the Animals-10 dataset from [Kaggle](https://www.kaggle.com/datasets/alessiocorrado99/animals10):
+
+```bash
+kaggle datasets download -d alessiocorrado99/animals10 -p data/ --unzip
+```
+
+The dataset folders are named in Italian. Rename them to English before training:
+
+```python
+import os
+
+mapping = {
+    "cane": "dog", "gatto": "cat", "mucca": "cow",
+    "elefante": "elephant", "farfalla": "butterfly", "gallina": "chicken",
+    "cavallo": "horse", "pecora": "sheep", "ragno": "spider", "scoiattolo": "squirrel",
+}
+
+base = "data/raw-img"
+for italian, english in mapping.items():
+    src, dst = os.path.join(base, italian), os.path.join(base, english)
+    if os.path.exists(src):
+        os.rename(src, dst)
+```
+
+### NER Dataset
+
+Generate the synthetic NER training dataset:
+
+```bash
+python src/generate_data.py
+```
+
+This produces `data/ner_dataset.json` with 1600 sentences (1200 positive / 400 negative), balanced across all 10 animal classes.
+
+---
+
 ## Training
 
 ### Image Classifier (ResNet-18)
 
 ```bash
 python src/classifier/train.py \
-    --data_dir data/Animals-10 \
+    --data_dir data/raw-img \
     --model_dir models/ \
     --epochs 20 \
     --batch_size 32 \
     --learning_rate 1e-3 \
     --patience 5
 ```
-
-Key arguments:
 
 | Argument | Default | Description |
 |----------|---------|-------------|
@@ -94,8 +133,6 @@ python src/ner/train.py \
     --patience 3
 ```
 
-Key arguments:
-
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--model_name` | `dslim/bert-base-NER` | Pretrained HuggingFace model. |
@@ -117,7 +154,7 @@ The best model (by validation F1) is saved to `models/ner_animal/best_model/` al
 ```bash
 python src/classifier/inference.py \
     --model_path models/best_animal_classifier.pth \
-    --image_path data/Animals-10/cow/sample.jpg \
+    --image_path data/raw-img/cow/OIP---lAIbDlHKmejDpqrXq6vAAAAA.jpeg \
     --top_k 3
 ```
 
@@ -136,17 +173,15 @@ Both scripts support `--device -1` (CPU) or `--device 0` (GPU) and `--log_level 
 
 ## Pipeline
 
-Run the full multimodal verification pipeline:
+> **Note:** Run all pipeline and inference commands from the `task_2/` root with `PYTHONPATH=.` so that `src` is resolvable as a package.
 
 ```bash
-python src/pipeline.py \
+PYTHONPATH=. python src/pipeline.py \
     --text "There is a beautiful cow standing in the field." \
-    --image_path "data/Animals-10/cow/sample.jpg" \
+    --image_path "data/raw-img/cow/OIP---lAIbDlHKmejDpqrXq6vAAAAA.jpeg" \
     --ner_model_path "models/ner_animal/best_model" \
     --cv_model_path "models/best_animal_classifier.pth"
 ```
-
-Key arguments:
 
 | Argument | Default | Description |
 |----------|---------|-------------|
@@ -162,7 +197,7 @@ Key arguments:
 ```
 =============================================
   Text  : There is a beautiful cow standing in the field.
-  Image : data/Animals-10/cow/sample.jpg
+  Image : data/raw-img/cow/OIP---lAIbDlHKmejDpqrXq6vAAAAA.jpeg
 =============================================
   RESULT: True
 =============================================
@@ -176,6 +211,7 @@ Key arguments:
 |------|-------------|
 | `notebooks/eda.ipynb` | Dataset exploration: class distribution, imbalance resolution via class weights, normalization statistics. |
 | `notebooks/demo.ipynb` | Pipeline demo across standard and edge cases with visual outputs. |
+| `src/generate_data.py` | Synthetic NER dataset generator (1600 sentences, 8 sentence styles, balanced per class). |
 | `src/ner/train.py` | Parameterized training script for the transformer-based NER model. |
 | `src/ner/inference.py` | Inference script for extracting animal entities from input text. |
 | `src/classifier/train.py` | Parameterized training script for the ResNet-18 image classifier. |
@@ -195,6 +231,6 @@ Demonstrates the full pipeline across standard and edge cases — missing entity
 To run the demo:
 
 ```bash
-cd notebooks
-jupyter notebook demo.ipynb
+cd task_2/notebooks
+PYTHONPATH=.. jupyter notebook demo.ipynb
 ```
