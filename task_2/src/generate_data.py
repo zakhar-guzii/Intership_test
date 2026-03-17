@@ -333,8 +333,11 @@ def generate_dataset(
 
 
 if __name__ == "__main__":
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    task_2_dir = os.path.dirname(script_dir)
+    final_output_path = os.path.join(task_2_dir, "data", "ner_dataset.json")
     generate_dataset(
         samples_per_class=120,
         negative_samples=400,
-        output_path="task_2/data/ner_dataset.json",
+        output_path=final_output_path,
     )

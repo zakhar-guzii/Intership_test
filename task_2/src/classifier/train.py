@@ -1,241 +1,275 @@
 import argparse
 import logging
-import multiprocessing
 import os
+import random
 
 import numpy as np
 import torch
-from datasets import load_dataset, DatasetDict
-from transformers import (
-    AutoModelForTokenClassification,
-    AutoTokenizer,
-    DataCollatorForTokenClassification,
-    EarlyStoppingCallback,
-    Trainer,
-    TrainingArguments,
-    set_seed,
-)
-import evaluate
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, Subset
+from torchvision import datasets, models, transforms
 
 
-LABEL_LIST = ["O", "B-ANIMAL", "I-ANIMAL"]
-ID2LABEL   = {i: label for i, label in enumerate(LABEL_LIST)}
-LABEL2ID   = {label: i for i, label in enumerate(LABEL_LIST)}
+def set_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
-
-def tokenize_and_align_labels(
-    examples: dict,
-    tokenizer: AutoTokenizer,
-    label_all_subwords: bool = False,
-) -> dict:
+def prepare_data(
+    data_dir: str,
+    batch_size: int,
+    val_split: float,
+    num_workers: int,
+    seed: int,
+) -> tuple[DataLoader, DataLoader, torch.Tensor, list[str]]:
     """
-    Tokenise pre-split tokens and align NER tags with subword tokens.
+    Load dataset from `data_dir`, apply augmentations on the train split,
+    compute class weights to address imbalance, and return data loaders.
 
-    Args:
-        examples:           Batch from a HuggingFace Dataset (keys: tokens, ner_tags).
-        tokenizer:          Tokenizer matching the pretrained model.
-        label_all_subwords: If True, propagate the label to every subword token.
-                            If False (default / IOB2 convention), only the first
-                            subword receives the label; continuations get -100
-                            so they are ignored by CrossEntropyLoss.
+    Class weight formula: W_c = N_train / (C * N_c)
+    where N_train = train subset size, C = number of classes, N_c = samples in class c.
     """
-    tokenized_inputs = tokenizer(
-        examples["tokens"],
-        truncation=True,
-        is_split_into_words=True,
-        max_length=128,
+    train_transforms = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(15),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225]),
+    ])
+
+    val_transforms = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225]),
+    ])
+
+    # Load twice — same indices, different transforms
+    train_full = datasets.ImageFolder(root=data_dir, transform=train_transforms)
+    val_full   = datasets.ImageFolder(root=data_dir, transform=val_transforms)
+
+    num_classes = len(train_full.classes)
+    total       = len(train_full)
+    logging.info(f"Dataset: {total} images across {num_classes} classes.")
+
+    # Shuffle indices with fixed seed for reproducibility
+    indices = list(range(total))
+    rng = random.Random(seed)
+    rng.shuffle(indices)
+
+    split = int((1.0 - val_split) * total)
+    train_indices = indices[:split]
+    val_indices   = indices[split:]
+
+    train_dataset = Subset(train_full, train_indices)
+    val_dataset   = Subset(val_full,   val_indices)
+
+    logging.info(f"Split: {len(train_indices)} train / {len(val_indices)} val")
+
+    # Class weights computed only on the train subset (no data leakage)
+    train_targets  = [train_full.targets[i] for i in train_indices]
+    class_counts   = np.bincount(train_targets, minlength=num_classes)
+    class_weights  = len(train_indices) / (
+        num_classes * np.where(class_counts == 0, 1, class_counts)
+    )
+    class_weights_tensor = torch.FloatTensor(class_weights)
+    logging.info(f"Class weights: {class_weights_tensor.tolist()}")
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
     )
 
-    all_labels = []
-    for i, label_ids_orig in enumerate(examples["ner_tags"]):
-        word_ids          = tokenized_inputs.word_ids(batch_index=i)
-        previous_word_idx = None
-        label_ids         = []
-
-        for word_idx in word_ids:
-            if word_idx is None:
-                label_ids.append(-100)
-            elif word_idx != previous_word_idx:
-                label_ids.append(label_ids_orig[word_idx])
-            else:
-                label_ids.append(
-                    label_ids_orig[word_idx] if label_all_subwords else -100
-                )
-            previous_word_idx = word_idx
-
-        all_labels.append(label_ids)
-
-    tokenized_inputs["labels"] = all_labels
-    return tokenized_inputs
+    return train_loader, val_loader, class_weights_tensor, train_full.classes
 
 
-def build_compute_metrics(label_list: list[str]):
+
+def build_model(num_classes: int, freeze_backbone: bool) -> nn.Module:
     """
-    Returns a compute_metrics function for seqeval token-level NER evaluation.
-    Reports precision, recall, F1, and accuracy.
+    Load pretrained ResNet-18 and replace the classification head.
+
+    If `freeze_backbone` is True, only the final FC layer is trained (fast
+    feature extraction). Set to False to fine-tune the entire network.
     """
-    seqeval = evaluate.load("seqeval")
+    model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
 
-    def compute_metrics(eval_preds) -> dict:
-        logits, labels = eval_preds
-        predictions = np.argmax(logits, axis=-1)
+    if freeze_backbone:
+        for param in model.parameters():
+            param.requires_grad = False
+        logging.info("Backbone frozen — training classification head only.")
+    else:
+        logging.info("Full fine-tuning — all layers trainable.")
 
-        true_labels = [
-            [label_list[l] for l in label_row if l != -100]
-            for label_row in labels
-        ]
-        true_preds = [
-            [label_list[p] for p, l in zip(pred_row, label_row) if l != -100]
-            for pred_row, label_row in zip(predictions, labels)
-        ]
+    num_ftrs = model.fc.in_features
+    model.fc = nn.Sequential(
+        nn.Dropout(p=0.3),
+        nn.Linear(num_ftrs, num_classes),
+    )
 
-        results = seqeval.compute(predictions=true_preds, references=true_labels)
-        return {
-            "precision": round(results["overall_precision"], 4),
-            "recall":    round(results["overall_recall"],    4),
-            "f1":        round(results["overall_f1"],        4),
-            "accuracy":  round(results["overall_accuracy"],  4),
-        }
-
-    return compute_metrics
+    return model
 
 
+
+def run_epoch(
+    model: nn.Module,
+    dataloader: DataLoader,
+    criterion: nn.Module,
+    optimizer: optim.Optimizer | None,
+    device: torch.device,
+) -> tuple[float, float]:
+    training = optimizer is not None
+    model.train() if training else model.eval()
+
+    running_loss = 0.0
+    correct      = 0
+    total        = 0
+
+    ctx = torch.enable_grad() if training else torch.no_grad()
+    with ctx:
+        for images, labels in dataloader:
+            images, labels = images.to(device), labels.to(device)
+
+            if training:
+                optimizer.zero_grad()
+
+            outputs = model(images)
+            loss    = criterion(outputs, labels)
+
+            if training:
+                loss.backward()
+                optimizer.step()
+
+            running_loss += loss.item() * images.size(0)
+            _, preds = torch.max(outputs, dim=1)
+            correct  += (preds == labels).sum().item()
+            total    += labels.size(0)
+
+    return running_loss / total, correct / total
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Fine-tune a transformer NER model for animal entity extraction."
+        description="Train a ResNet-18 classifier on the Animals-10 dataset."
     )
-    parser.add_argument("--model_name",    type=str,   default="dslim/bert-base-NER",
-                        help="Pretrained HuggingFace model name or local path.")
-    parser.add_argument("--data_path",     type=str,   required=True,
-                        help="Path to training dataset (JSON lines format).")
-    parser.add_argument("--val_path",      type=str,   default=None,
-                        help="Path to separate validation dataset. "
-                             "If omitted, val_split fraction of data_path is used.")
-    parser.add_argument("--output_path",   type=str,   default="models/ner_animal",
-                        help="Directory to save checkpoints and the final model.")
-    parser.add_argument("--epochs",        type=int,   default=5,
+    parser.add_argument("--data_dir",       type=str,   default="data/Animals-10",
+                        help="Path to dataset root directory.")
+    parser.add_argument("--model_dir",      type=str,   default="models/",
+                        help="Directory to save model checkpoints.")
+    parser.add_argument("--epochs",         type=int,   default=20,
                         help="Maximum number of training epochs.")
-    parser.add_argument("--batch_size",    type=int,   default=32,
-                        help="Per-device batch size for training and evaluation.")
-    parser.add_argument("--learning_rate", type=float, default=2e-5,
-                        help="Peak learning rate for AdamW.")
-    parser.add_argument("--weight_decay",  type=float, default=0.01,
-                        help="L2 weight decay coefficient.")
-    parser.add_argument("--warmup_steps",  type=int,   default=100,
-                        help="Number of warmup steps for LR scheduler.")
-    parser.add_argument("--patience",      type=int,   default=3,
-                        help="Early-stopping patience (epochs without F1 improvement).")
-    parser.add_argument("--val_split",     type=float, default=0.1,
-                        help="Validation fraction when --val_path is not provided.")
-    parser.add_argument("--label_all_subwords", action="store_true",
-                        help="Propagate NER label to all subword tokens "
-                             "(default: first subword only, IOB2 convention).")
-    parser.add_argument("--seed",          type=int,   default=42,
+    parser.add_argument("--batch_size",     type=int,   default=32,
+                        help="Batch size for training and validation.")
+    parser.add_argument("--learning_rate",  type=float, default=1e-3,
+                        help="Initial learning rate for the optimizer.")
+    parser.add_argument("--val_split",      type=float, default=0.2,
+                        help="Fraction of data to use for validation (default: 0.2).")
+    parser.add_argument("--num_workers",    type=int,   default=2,
+                        help="Number of DataLoader worker processes.")
+    parser.add_argument("--seed",           type=int,   default=42,
                         help="Random seed for reproducibility.")
-    parser.add_argument("--fp16",          action="store_true",
-                        help="Enable mixed precision training (CUDA only).")
-    parser.add_argument("--num_workers",   type=int,   default=None,
-                        help="DataLoader worker count. Defaults to min(4, cpu_count).")
+    parser.add_argument("--patience",       type=int,   default=5,
+                        help="Early-stopping patience (epochs without improvement).")
+    parser.add_argument("--freeze_backbone", action="store_true",
+                        help="Freeze ResNet backbone; train only the classification head.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     set_seed(args.seed)
 
     if torch.cuda.is_available():
-        device_str = "cuda"
+        device = torch.device("cuda")
     elif torch.backends.mps.is_available():
-        device_str = "mps"
+        device = torch.device("mps")
     else:
-        device_str = "cpu"
-    logging.info(f"Device: {device_str}")
+        device = torch.device("cpu")
+    logging.info(f"Device: {device}")
 
-    use_fp16 = args.fp16 and device_str == "cuda"
-    if args.fp16 and device_str != "cuda":
-        logging.warning("--fp16 is only supported on CUDA. Ignoring for current device.")
-
-    if args.val_path:
-        raw_dataset: DatasetDict = load_dataset(
-            "json",
-            data_files={"train": args.data_path, "validation": args.val_path},
-        )
-    else:
-        full  = load_dataset("json", data_files={"train": args.data_path})["train"]
-        split = full.train_test_split(test_size=args.val_split, seed=args.seed)
-        raw_dataset = DatasetDict({"train": split["train"], "validation": split["test"]})
-
-    logging.info(
-        f"Dataset: {len(raw_dataset['train'])} train / "
-        f"{len(raw_dataset['validation'])} val examples."
+    # Data
+    train_loader, val_loader, class_weights, class_names = prepare_data(
+        data_dir    = args.data_dir,
+        batch_size  = args.batch_size,
+        val_split   = args.val_split,
+        num_workers = args.num_workers,
+        seed        = args.seed,
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name, add_prefix_space=True)
+    # Model
+    model = build_model(
+        num_classes     = len(class_names),
+        freeze_backbone = args.freeze_backbone,
+    ).to(device)
 
-    model = AutoModelForTokenClassification.from_pretrained(
-        args.model_name,
-        num_labels=len(LABEL_LIST),
-        id2label=ID2LABEL,
-        label2id=LABEL2ID,
-        ignore_mismatched_sizes=True,
+    # Loss, optimiser, scheduler
+    criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
+    optimizer = optim.Adam(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=args.learning_rate,
+    )
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.epochs, eta_min=1e-6
     )
 
-    cpu_count = multiprocessing.cpu_count()
-    num_proc  = min(4, cpu_count) if device_str != "mps" else 1
-    logging.info(f"Tokenizing dataset using {num_proc} CPU core(s)...")
+    # Training loop with early stopping
+    best_val_acc      = 0.0
+    epochs_no_improve = 0
+    os.makedirs(args.model_dir, exist_ok=True)
+    save_path = os.path.join(args.model_dir, "best_animal_classifier.pth")
 
-    tokenized_dataset = raw_dataset.map(
-        lambda x: tokenize_and_align_labels(x, tokenizer, args.label_all_subwords),
-        batched=True,
-        num_proc=num_proc,
-        remove_columns=raw_dataset["train"].column_names,
-    )
+    for epoch in range(1, args.epochs + 1):
+        logging.info(f"\nEpoch {epoch}/{args.epochs}  (lr={scheduler.get_last_lr()[0]:.2e})")
+        logging.info("-" * 40)
 
-    num_workers = args.num_workers if args.num_workers is not None else min(4, cpu_count)
+        train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer, device)
+        val_loss,   val_acc   = run_epoch(model, val_loader,   criterion, None,      device)
+        scheduler.step()
 
-    training_args = TrainingArguments(
-        output_dir                  = args.output_path,
-        num_train_epochs            = args.epochs,
-        per_device_train_batch_size = args.batch_size,
-        per_device_eval_batch_size  = args.batch_size,
-        learning_rate               = args.learning_rate,
-        weight_decay                = args.weight_decay,
-        warmup_steps                = args.warmup_steps,
-        eval_strategy               = "epoch",
-        save_strategy               = "epoch",
-        logging_steps               = 20,
-        load_best_model_at_end      = True,
-        metric_for_best_model       = "f1",
-        greater_is_better           = True,
-        seed                        = args.seed,
-        report_to                   = "none",
-        dataloader_num_workers      = num_workers,
-        fp16                        = use_fp16,
-    )
+        logging.info(f"Train — loss: {train_loss:.4f}  acc: {train_acc:.4f}")
+        logging.info(f"Val   — loss: {val_loss:.4f}  acc: {val_acc:.4f}")
 
-    trainer = Trainer(
-        model           = model,
-        args            = training_args,
-        train_dataset   = tokenized_dataset["train"],
-        eval_dataset    = tokenized_dataset["validation"],
-        processing_class = tokenizer,
-        data_collator   = DataCollatorForTokenClassification(tokenizer),
-        compute_metrics = build_compute_metrics(LABEL_LIST),
-        callbacks       = [EarlyStoppingCallback(early_stopping_patience=args.patience)],
-    )
+        if val_acc > best_val_acc:
+            best_val_acc      = val_acc
+            epochs_no_improve = 0
+            torch.save(
+                {
+                    "epoch":            epoch,
+                    "model_state_dict": model.state_dict(),
+                    "val_acc":          best_val_acc,
+                    "class_names":      class_names,
+                    "args":             vars(args),
+                },
+                save_path,
+            )
+            logging.info(f"Checkpoint saved → {save_path}  (val_acc={best_val_acc:.4f})")
+        else:
+            epochs_no_improve += 1
+            logging.info(
+                f"No improvement for {epochs_no_improve}/{args.patience} epochs."
+            )
+            if epochs_no_improve >= args.patience:
+                logging.info("Early stopping triggered.")
+                break
 
-    logging.info("\nStarting training...")
-    trainer.train()
-
-    best_model_path = os.path.join(args.output_path, "best_model")
-    trainer.save_model(best_model_path)
-    tokenizer.save_pretrained(best_model_path)
-    logging.info(f"\nBest model saved to: {best_model_path}")
-
-    metrics = trainer.evaluate()
-    logging.info("\nFinal validation metrics:")
-    for k, v in metrics.items():
-        logging.info(f"  {k}: {v}")
+    logging.info(f"\nTraining complete. Best val acc: {best_val_acc:.4f}")
 
 
 if __name__ == "__main__":

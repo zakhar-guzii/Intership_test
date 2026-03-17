@@ -53,19 +53,15 @@ Python **3.10+** is required.
 
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate      # macOS / Linux
-# .venv\Scripts\activate       # Windows
+source .venv/bin/activate     
 ```
 
 **2. Install all dependencies:**
 
 ```bash
+cd ../task_2
 pip install -r requirements.txt
 ```
-
-> For optimal training performance, install the PyTorch build that matches your CUDA/GPU environment from [pytorch.org](https://pytorch.org).
-
-> **VSCode users:** after activating the venv, select it as the Python interpreter via `Cmd+Shift+P` → `Python: Select Interpreter` → choose `.venv`. For Jupyter notebooks, select the `.venv` kernel in the top-right kernel picker.
 
 ---
 
@@ -73,31 +69,8 @@ pip install -r requirements.txt
 
 ### Image Dataset
 
-Download the Animals-10 dataset from [Kaggle](https://www.kaggle.com/datasets/alessiocorrado99/animals10). The easiest way is via `notebooks/data_loading.ipynb` which handles download, extraction, and folder renaming automatically.
-
-Alternatively, via CLI from the `task_2/` root:
-
-```bash
-kaggle datasets download -d alessiocorrado99/animals10 -p data/ --unzip
-```
-
-The dataset folders are named in Italian. Rename them to English before training:
-
-```python
-import os
-
-mapping = {
-    "cane": "dog", "gatto": "cat", "mucca": "cow",
-    "elefante": "elephant", "farfalla": "butterfly", "gallina": "chicken",
-    "cavallo": "horse", "pecora": "sheep", "ragno": "spider", "scoiattolo": "squirrel",
-}
-
-base = "data/raw-img"
-for italian, english in mapping.items():
-    src, dst = os.path.join(base, italian), os.path.join(base, english)
-    if os.path.exists(src):
-        os.rename(src, dst)
-```
+Download the Animals-10 dataset from [Kaggle](https://www.kaggle.com/datasets/alessiocorrado99/animals10). 
+For this use data_loading.ipynb and run all cells
 
 ### NER Dataset
 
@@ -109,7 +82,7 @@ python src/generate_data.py
 
 This produces `data/ner_dataset.json` with 1600 sentences (1200 positive / 400 negative), balanced across all 10 animal classes across 8 sentence styles.
 
-> **Note:** The NER model achieves F1 = 1.0 on the validation set due to the synthetic and templated nature of the training data. Real-world performance on more varied text may differ.
+> **Note:** The NER model achieves F1 = 1.0 on the validation set due to the synthetic and templated nature of the training data. 
 
 ---
 
@@ -120,10 +93,10 @@ All training commands should be run from the `task_2/` root.
 ### Image Classifier (ResNet-18)
 
 ```bash
-python src/classifier/train.py \
-    --data_dir data/raw-img \
-    --model_dir models/ \
-    --epochs 20 \
+python src/ner/train.py \
+    --data_path data/ner_dataset.json \
+    --output_path models/ \
+    --epochs 5 \
     --batch_size 32 \
     --learning_rate 1e-3 \
     --patience 5
@@ -176,10 +149,13 @@ All inference commands should be run from the `task_2/` root.
 ### Image Classifier
 
 ```bash
-python src/classifier/inference.py \
-    --model_path models/best_animal_classifier.pth \
-    --image_path data/raw-img/cow/<filename>.jpeg \
-    --top_k 3
+python src/classifier/train.py \
+    --data_dir data/raw-img \
+    --model_dir models/ \
+    --epochs 20 \
+    --batch_size 32 \
+    --learning_rate 1e-3 \
+    --patience 5
 ```
 
 ### NER Model
